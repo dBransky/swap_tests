@@ -18,6 +18,7 @@ all: $(TEST_BIN) kmod
 # Build the kernel module
 kmod:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	sudo rmmod swpctl_module || true
 	@sudo insmod swpctl_module.ko || { echo "Failed to insert module"; exit 1; }
 
 # Build the userspace test binary
