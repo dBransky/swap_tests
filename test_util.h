@@ -32,9 +32,13 @@ void make_swaps(int num_swapfiles, int swap_flags);
 int vma_has_swap_info(void *addr);
 int disable_swaps();
 void* map_anon_region(size_t size);
+void* map_large_anon_region(unsigned long long size);
 pid_t start_ftrace(void);
 void stop_ftrace(char* test_name, pid_t pid);
 struct vma_info_args get_vma_info(void *addr);
 void set_minimal_swapfile_num(int num);
+void start_measurement(void);
+//return time in micro
+unsigned long long stop_measurement(void);
 
 #endif // TEST_UTIL_H

@@ -7,7 +7,7 @@
 #include <sys/mman.h>
 #include <signal.h>
 #include <limits.h>
-
+#include <time.h>
 
 
 struct swap_info_args {
@@ -17,8 +17,35 @@ struct swap_info_args {
 };
 
 #define PAGE_SIZE 4096
-#define TOTAL_SWAPFILES 100
+#define TOTAL_SWAPFILES 200
 static int free_swapfile_index = 1;
+int is_measuring = 0;
+struct timespec start_time;
+
+void start_measurement(void) {
+    if (is_measuring) {
+        fprintf(stderr, "Measurement already started.\n");
+        exit(EXIT_FAILURE);
+    }
+    is_measuring = 1;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    printf("Starting measurement... at %llu ns\n", now.tv_sec * 1000000000ULL + now.tv_nsec);
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+}
+unsigned long long stop_measurement(void) {
+    if (!is_measuring) {
+        fprintf(stderr, "Measurement not started.\n");
+        exit(EXIT_FAILURE);
+    }
+    is_measuring = 0;
+    struct timespec end_time;
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    unsigned long long start_ns = start_time.tv_sec * 1000000000ULL + start_time.tv_nsec;
+    unsigned long long end_ns = end_time.tv_sec * 1000000000ULL + end_time.tv_nsec;
+    printf("Stopping measurement... at %llu ns\n", end_ns);
+    return (end_ns - start_ns) / 1000; // Convert to microseconds
+}
 
 void set_minimal_swapfile_num(int num){
     if (num < 1 || num > TOTAL_SWAPFILES) {
@@ -47,13 +74,13 @@ pid_t start_ftrace(void) {
             "swap:*",
             "-e",
             "vmscan:*",
-            "-e",
-            "kmem:*",
-            "-e",
-            "mmap:*",
-            "-e",
-            "vmalloc:*",
             NULL
+            // "-e",
+            // "kmem:*",
+            // "-e",
+            // "mmap:*",
+            // "-e",
+            // "vmalloc:*",
         };
         
         execvp("trace-cmd", args);
@@ -140,12 +167,28 @@ void make_swaps(int num_swapfiles, int swap_flags) {
 
 int swapout_page(void *addr) {
     void* aligned_page = (void*)((unsigned long)addr - (unsigned long)addr % PAGE_SIZE);
-    printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
-    if (madvise(aligned_page, 1, MADV_PAGEOUT) < 0) {
+    // printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
+    if (madvise(aligned_page, PAGE_SIZE, MADV_PAGEOUT) < 0) {
         perror("madvise");
         return -1;
     }
     return 0;
+}
+void* map_large_anon_region(unsigned long long size) {
+    if (size % (unsigned long long)PAGE_SIZE != 0) {
+        fprintf(stderr, "Size must be a multiple of PAGE_SIZE (%d)\n", PAGE_SIZE);
+        return NULL;
+    }
+    unsigned long long sz_in_pages = (size / (unsigned long long)PAGE_SIZE);
+    char *addr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) {
+        perror("mmap");
+        return NULL;
+    }
+    for (unsigned long long i = 0; i < sz_in_pages; i++) {
+        *(unsigned long long *)(addr+(i * PAGE_SIZE)) = i;
+    }
+    return addr;
 }
 void* map_anon_region(size_t size) {
     if (size % PAGE_SIZE != 0) {
@@ -201,7 +244,7 @@ int disable_swaps() {
         if (sscanf(line, "%255s %31s %d %d %d", filename, type, &size, &used, &priority) != 5) {
             continue; // Skip malformed lines
         }
-        
+        printf("line: %s\n", line);
         printf("Processing: %s (used: %d)\n", filename, used);
         char *underscore = strrchr(filename, '_');
         char *dot = strrchr(filename, '.');

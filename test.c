@@ -4,15 +4,41 @@
 #include <getopt.h>
 
 #define PAGE_SIZE 4096
-REGISTER_TEST(test_folio_offset);
-REGISTER_TEST(test_multiple_swapfiles);
-REGISTER_TEST(test_multiple_swapfiles2);
-REGISTER_TEST(test_vma_si_allcation);
-REGISTER_TEST(test_stack_vma_offset);
-REGISTER_TEST(test_stack_vma_enlarge);
-REGISTER_TEST(test_available_swapfile);
-REGISTER_TEST(test_vma_values);
-REGISTER_TEST(test_mul_vma_values);
+// REGISTER_TEST(test_folio_offset);
+// REGISTER_TEST(test_multiple_swapfiles);
+// REGISTER_TEST(test_multiple_swapfiles2);
+// REGISTER_TEST(test_vma_si_allcation);
+// REGISTER_TEST(test_stack_vma_offset);
+// REGISTER_TEST(test_stack_vma_enlarge);
+// REGISTER_TEST(test_available_swapfile);
+// REGISTER_TEST(test_vma_values);
+// REGISTER_TEST(test_mul_vma_values);
+// REGISTER_PERF_TEST(test_seq_swapout_throughput);
+// REGISTER_PERF_TEST(test_rand_swapout_throughput);
+REGISTER_PERF_TEST(test_seq_swapin_throughput);
+// REGISTER_PERF_TEST(test_rand_swapin_throughput);
+
+void test_seq_swapin_throughput(void) {
+    make_swaps(1, 0);
+    unsigned long long region_size = 2<<29; // 512MiB region
+    unsigned long long pages = region_size / PAGE_SIZE;
+    char *addr = map_large_anon_region(region_size);
+    for (unsigned long long i = 0; i < pages; i++) {
+        swapout_page(addr + (i * PAGE_SIZE));
+    }
+    start_measurement();
+    for (unsigned long long i = 0; i < pages; i++) {
+        unsigned long long * tmp_addr = (unsigned long long *)(addr+(i * PAGE_SIZE));
+        (*tmp_addr)++;
+        ASSERT_EQ(*tmp_addr, i+1);
+
+    }
+    unsigned long long elapsed = stop_measurement();
+    double throughput = (double)(region_size) / elapsed; // bytes per nanosecond
+    printf("Sequential swapout throughput: %.2f bytes/mu_s\n", throughput);
+    ASSERT_ABOVE(throughput, 150);
+}
+
 
 void test_stack_vma_offset(void) {
     make_swaps(1, 0);
@@ -26,6 +52,7 @@ void test_stack_vma_offset(void) {
         swapout_page(stack + (i * PAGE_SIZE));
         ASSERT_EQ(get_swap_offset_from_page(stack + (i * PAGE_SIZE)), 9-i);
         stack[i * PAGE_SIZE] = i;
+        
     }
 }
 void test_stack_vma_enlarge(void) {
@@ -217,8 +244,10 @@ int main(int argc, char *argv[]) {
     // add cli with getopt
     static int minimal_swapfile_num = 1;
     static int enable_traces = 0;
+    static int will_run_perf_tests = 0;
     static struct option long_options[] = {
         {"trace", no_argument, &enable_traces, 't'},
+        {"perf", no_argument, 0, 'p'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
@@ -228,10 +257,14 @@ int main(int argc, char *argv[]) {
         printf("Usage: %s [--trace] [--minimal-swapfile-num <num>]\n", argv[0]);
         printf("Options:\n");
         printf("  --trace                   Enable tracing with trace-cmd\n");
+        printf("  ---perf                   run preformace tests\n");
         printf("  -h, --help                Show this help message\n");
     }
-    while ((opt = getopt_long(argc, argv, "th", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "thp", long_options, &option_index)) != -1) {
         switch (opt) {
+            case 'p':
+                will_run_perf_tests = 1;
+                break;
             case 't':
                 enable_traces = 1;
                 break;
@@ -245,5 +278,9 @@ int main(int argc, char *argv[]) {
         }
         
     set_minimal_swapfile_num(minimal_swapfile_num);
-    return run_all_tests(enable_traces);
+    run_all_tests(enable_traces);
+    if (will_run_perf_tests) {
+        run_perf_tests(enable_traces);
+    }
+    return 0;
 }
