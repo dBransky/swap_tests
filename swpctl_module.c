@@ -6,54 +6,111 @@
 #include <linux/swap.h>
 #include <linux/mutex.h>
 #include <linux/plist.h>
+#include <linux/swapops.h>
 
 #define DEVICE_NAME "swapctl"
 #define IOCTL_GET_SWAPFILE_COUNT _IOR('s', 0x01, int)
 #define IOCTL_GET_SWAP_OFFSET_FROM_PAGE _IOR('s', 0x02, unsigned long)
 #define IOCTL_VMA_HAS_SWAP_INFO _IOR('s', 0x03, int)
+#define IOCTL_VMA_INFO _IOR('s', 0x04, struct vma_info_args)
 
-extern struct plist_head *swap_avail_heads;
-extern spinlock_t swap_avail_lock;
+struct swap_info_args {
+    void *virtual_address;     // Input: User-space virtual address
+    unsigned long offset;      // Output: Swap offset
+    int has_swap_info;         // Output: Swap info presence
+};
+
+struct vma_info_args {
+    void *virtual_address;
+    unsigned long vma_start;
+    unsigned long vma_end;
+    void *vma_ptr;
+    unsigned long vm_flags;
+    void *swap_info;
+};
 
 static long swapctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     
     switch (cmd) {
-        case IOCTL_GET_SWAPFILE_COUNT: {
+    case IOCTL_VMA_INFO: {
+        struct vma_info_args args;
+
+        if (copy_from_user(&args, (void __user *)arg, sizeof(args)))
+            return -EFAULT;
+
+        struct vm_area_struct *vma = find_vma(current->mm, (unsigned long)args.virtual_address);
+        if (!vma)
+            return -EINVAL;
+
+        args.vma_start = vma->vm_start;
+        args.vma_end = vma->vm_end;
+        args.vma_ptr = vma;
+        args.vm_flags = vma->vm_flags;
+        spin_lock(&vma->swap_lock);
+        args.swap_info = vma->si; // Pointer to swap info
+        spin_unlock(&vma->swap_lock);
+
+        if (copy_to_user((void __user *)arg, &args, sizeof(args)))
+            return -EFAULT;
+
+        return 0;
+    }
+    case IOCTL_GET_SWAPFILE_COUNT: {
         int count = get_avail_swap_info_count();
         if (copy_to_user((int __user *)arg, &count, sizeof(count)))
             return -EFAULT;
         return 0;
         }
     case IOCTL_GET_SWAP_OFFSET_FROM_PAGE: {
-        void* virtual_address;
-        unsigned long offset;
-        if (copy_from_user(&virtual_address, (void __user *)arg, sizeof(virtual_address)))
+        struct swap_info_args args;
+
+        if (copy_from_user(&args, (void __user *)arg, sizeof(args)))
             return -EFAULT;
-        struct folio *folio = virt_to_folio(virtual_address);
-        offset = swp_offset(folio->swap);
-        if (copy_to_user((unsigned long __user *)arg, &offset, sizeof(offset)))
+        printk(KERN_INFO "swapctl: Getting swap offset for address 0x%lx\n", (unsigned long)args.virtual_address);
+         // Pin the user page
+
+        struct page *page = NULL;
+        int ret = get_user_pages_fast((unsigned long)args.virtual_address, 1, 0, &page);
+        if (ret != 1) {
+            pr_err("swapctl: Failed to get page for user address %px (ret=%d)\n", 
+                args.virtual_address, ret);
             return -EFAULT;
+        }
+        struct folio* folio = page_folio(page);
+        if(!folio) {
+            pr_err("swapctl: Invalid folio for address %px\n", args.virtual_address);
+            return -EINVAL;
+        }
+        printk(KERN_INFO "swapctl: Folio %px has swap %lu\n", folio, swp_offset(folio->swap));
+        args.offset = swp_offset(folio->swap);
+        
+        put_page(page); // ADD THIS LINE before return
+
+        if (copy_to_user((void __user *)arg, &args, sizeof(args)))
+            return -EFAULT;
+
         return 0;
     }
     case IOCTL_VMA_HAS_SWAP_INFO: {
-        void* virtual_address;
-        int has_swap_info;
-        if (copy_from_user(&virtual_address, (void __user *)arg, sizeof(virtual_address)))
+        struct swap_info_args args;
+
+        if (copy_from_user(&args, (void __user *)arg, sizeof(args)))
             return -EFAULT;
-        struct vm_area_struct *vma = find_vma(current->mm, (unsigned long)virtual_address);
+
+        struct vm_area_struct *vma = find_vma(current->mm, (unsigned long)args.virtual_address);
         if (!vma)
             return -EINVAL;
-        spin_lock(&vma->swap_lock);
-    	has_swap_info  = vma->si != NULL;
-    	spin_unlock(&vma->swap_lock);
 
-        if (copy_to_user((int __user *)arg, &has_swap_info, sizeof(has_swap_info)))
+        spin_lock(&vma->swap_lock);
+        args.has_swap_info = vma->si != NULL;
+        spin_unlock(&vma->swap_lock);
+
+        if (copy_to_user((void __user *)arg, &args, sizeof(args)))
             return -EFAULT;
+
         return 0;
     }
-
-
     default:
         return -EINVAL;
 }

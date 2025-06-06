@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <sys/swap.h>
 #include <sys/mman.h>
+#include <signal.h>
+#include <limits.h>
+
+
 
 struct swap_info_args {
     void *virtual_address;     // Input: User-space virtual address
@@ -14,8 +18,60 @@ struct swap_info_args {
 
 #define PAGE_SIZE 4096
 #define TOTAL_SWAPFILES 100
-static int free_swapfile_index = 60;
+static int free_swapfile_index = 1;
 
+void set_minimal_swapfile_num(int num){
+    if (num < 1 || num > TOTAL_SWAPFILES) {
+        fprintf(stderr, "Invalid number of swapfiles: %d. Must be between 1 and %d.\n", num, TOTAL_SWAPFILES);
+        exit(EXIT_FAILURE);
+    }
+    free_swapfile_index = num;
+}
+
+pid_t start_ftrace(void) {
+    pid_t pid = fork();
+    
+    if (pid == -1) {
+        perror("fork failed");
+        return -1;
+    }
+    
+    if (pid == 0) {
+        // close(STDOUT_FILENO); // Close stdout in the child process
+        close(STDERR_FILENO); // Close stderr in the child process
+        // Child process - exec trace-cmd
+        char *args[] = {
+            "trace-cmd",
+            "record",
+            "-e",
+            "swap:*",
+            "-e",
+            "vmscan:*",
+            "-e",
+            "kmem:*",
+            "-e",
+            "mmap:*",
+            "-e",
+            "vmalloc:*",
+            NULL
+        };
+        
+        execvp("trace-cmd", args);
+        perror("execvp failed");
+        exit(1);
+    }
+    sleep(10); // Give trace-cmd some time to start
+    return pid;
+}
+void stop_ftrace(char* test_name, pid_t pid) {
+    kill(pid, SIGINT); // Send SIGINT to stop trace-cmd
+    sleep(10); // Wait for trace-cmd to finish
+    kill(pid, SIGKILL); // Ensure it is killed
+    char* command = malloc(256);
+    snprintf(command, 256, "trace-cmd report > %s.trace", test_name);
+    system(command);
+    free(command);
+}
 int vma_has_swap_info(void *addr) {
     struct swap_info_args args = {0};
     args.has_swap_info = -1;
@@ -42,6 +98,7 @@ int get_swapfile_count( ){
 int get_swap_offset_from_page(void *addr) {
     struct swap_info_args args = {0};
     args.virtual_address = addr;
+    // printf("%p\n",args.virtual_address);
     if (ioctl(open(DEVICE, O_RDONLY), IOCTL_GET_SWAP_OFFSET_FROM_PAGE, &args) < 0) {
         perror("Failed to get swap offset from page");
         return -1;
@@ -50,7 +107,7 @@ int get_swap_offset_from_page(void *addr) {
 }
 void mkswap(const char *filename){
     char command[256];
-    snprintf(command, sizeof(command), "mkswap %s", filename);
+    snprintf(command, sizeof(command), "mkswap %s > /dev/null 2>&1", filename);
     system(command);
 }
 void enable_swap(const char *filename, int swap_flags) {
@@ -81,29 +138,10 @@ void make_swaps(int num_swapfiles, int swap_flags) {
     }
 }
 
-int delete_all_swaps() {
-    for (int i = 1; i <= TOTAL_SWAPFILES; i++) {
-        char filename[256];
-        snprintf(filename, sizeof(filename), "/scratch/vma_swaps/swapfile_%d.swap", i);
-        disable_swap(filename);
-        if (remove(filename) < 0) {
-            perror("Failed to delete swap file");
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int delete_all_swaps_no_check() {
-    for (int i = 1; i <= TOTAL_SWAPFILES; i++) {
-        char filename[256];
-        snprintf(filename, sizeof(filename), "/scratch/vma_swaps/swapfile_%d.swap", i);
-        swapoff(filename);
-    }
-    return 0;
-}
 int swapout_page(void *addr) {
-    if (madvise(addr, 1, MADV_PAGEOUT) < 0) {
+    void* aligned_page = (void*)((unsigned long)addr - (unsigned long)addr % PAGE_SIZE);
+    printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
+    if (madvise(aligned_page, 1, MADV_PAGEOUT) < 0) {
         perror("madvise");
         return -1;
     }
@@ -121,7 +159,75 @@ void* map_anon_region(size_t size) {
         return NULL;
     }
     for (int i = 0; i < sz_in_pages; i++) {
-        addr[i] = i;
+        addr[i*PAGE_SIZE] = i;
     }
     return addr;
+}
+struct vma_info_args get_vma_info(void *addr) {
+    struct vma_info_args args = {0};
+    args.virtual_address = addr;
+    if (ioctl(open(DEVICE, O_RDONLY), IOCTL_VMA_INFO, &args) < 0) {
+        perror("Failed to get VMA info");
+        return args; // Return empty args on error
+    }
+    return args;
+}
+
+int disable_swaps() {
+    FILE *fp;
+    char line[256];
+    char filename[256];
+    char type[32];
+    int size, used, priority;
+    int min_available_index = 1;
+    
+    // Open /proc/swaps
+    fp = fopen("/proc/swaps", "r");
+    if (fp == NULL) {
+        perror("Failed to open /proc/swaps");
+        return -1;
+    }
+    
+    // Skip the header line
+    if (fgets(line, sizeof(line), fp) == NULL) {
+        fprintf(stderr, "Error reading /proc/swaps header\n");
+        fclose(fp);
+        return -1;
+    }
+    
+    // Process each swap entry
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        // Parse the line
+        if (sscanf(line, "%255s %31s %d %d %d", filename, type, &size, &used, &priority) != 5) {
+            continue; // Skip malformed lines
+        }
+        
+        printf("Processing: %s (used: %d)\n", filename, used);
+        char *underscore = strrchr(filename, '_');
+        char *dot = strrchr(filename, '.');
+        int index = INT_MAX;
+        if (underscore && dot && underscore < dot) {
+            index = atoi(underscore + 1);
+        }
+        
+        // If used is 0, turn off the swapfile
+        if (used == 0) {
+            printf("Turning off unused swapfile: %s\n", filename);
+            disable_swap(filename);
+            // Extract index from filename
+            // Look for pattern like "swapfile_X.swap"
+            
+        }
+        else{
+            printf("Swapfile %s is in use, index: %d. min_available_index: %d\n", filename, index, min_available_index);
+
+            if (index+1 > min_available_index) {
+                min_available_index = index + 1; // Increment to find the next available index
+            }
+        }
+    }
+    
+    fclose(fp);
+    printf("Minimal available swapfile index: %d\n", min_available_index);
+    return min_available_index;
 }

@@ -20,6 +20,7 @@ typedef struct test_case {
 } test_case_t;
 
 static test_case_t *test_list_head = NULL;
+static int current_test_failed = 0;  // Track current test failure state
 
 #define REGISTER_TEST(test_name) \
     void test_name(void); \
@@ -33,37 +34,63 @@ static test_case_t *test_list_head = NULL;
     if (!(expr)) { \
         fprintf(stderr, COLOR_RED "FAIL" COLOR_RESET " [%s:%d] %s\n", \
                 __FILE__, __LINE__, #expr); \
+        current_test_failed = 1; \
     } \
 } while (0)
 
 #define ASSERT_EQ(a, b) do { \
     if ((a) != (b)) { \
-        fprintf(stderr, COLOR_RED "FAIL" COLOR_RESET " [%s:%d] %s == %s (%d != %d)\n", \
-                __FILE__, __LINE__, #a, #b, (int)(a), (int)(b)); \
+        fprintf(stderr, COLOR_RED "FAIL" COLOR_RESET " [%s:%d] %s == %s (%lx != %lx)\n", \
+                __FILE__, __LINE__, #a, #b, (unsigned long)(a), (unsigned long)(b)); \
+        current_test_failed = 1; \
     } \
 } while (0)
 
-static inline int run_all_tests(void) {
+#define ASSERT_NEQ(a, b) do { \
+    if ((a) == (b)) { \
+        fprintf(stderr, COLOR_RED "FAIL" COLOR_RESET " [%s:%d] %s != %s (%lx == %lx)\n", \
+                __FILE__, __LINE__, #a, #b, (unsigned long)(a), (unsigned long)(b)); \
+        current_test_failed = 1; \
+    } \
+} while (0)
+
+static inline int run_all_tests(int enable_traces) {
     int count = 0;
     int passed = 0;
     test_case_t *t = test_list_head;
+    pid_t pid = 0;
+    set_minimal_swapfile_num(disable_swaps()); // Disable all swaps before running tests
+    
     while (t) {
-        printf(COLOR_YELLOW "RUNNING" COLOR_RESET " %s\n", t->name);
+        fprintf(stderr, COLOR_YELLOW "RUNNING" COLOR_RESET " %s\n", t->name);
         fflush(stdout);
-        t->func();
-        // delete_all_swaps(); // Clean up after each test
-        // if (get_swapfile_count() != 0) {
-        //     fprintf(stderr, COLOR_RED "FAIL" COLOR_RESET " [%s:%d] Swap files not cleaned up\n",
-        //             __FILE__, __LINE__);
-        //     return EXIT_FAILURE;
-        // }
-        printf(COLOR_GREEN "PASS" COLOR_RESET "    %s\n\n", t->name);
-        passed++;
+        
+        // Reset failure state for this test
+        current_test_failed = 0;
+        
+        if (enable_traces) 
+            pid = start_ftrace(); // Start ftrace if needed
+            
+        t->func();  
+        
+        set_minimal_swapfile_num(disable_swaps()); // Disable all swaps before running tests
+        
+        if (enable_traces) 
+            stop_ftrace(t->name, pid); // Stop ftrace if needed
+        
+        // Check if test passed or failed
+        if (current_test_failed) {
+            fprintf(stderr, COLOR_RED "FAIL" COLOR_RESET "    %s\n", t->name);
+        } else {
+            fprintf(stderr, COLOR_GREEN "PASS" COLOR_RESET "    %s\n", t->name);
+            passed++;
+        }
+        
         count++;
         t = t->next;
     }
 
-    printf("Summary: %d/%d tests passed\n", passed, count);
+    fprintf(stderr, "Summary: %d/%d tests passed\n", passed, count);
     return (passed == count) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
