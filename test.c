@@ -4,20 +4,47 @@
 #include <getopt.h>
 
 #define PAGE_SIZE 4096
-// REGISTER_TEST(test_folio_offset);
-// REGISTER_TEST(test_multiple_swapfiles);
-// REGISTER_TEST(test_multiple_swapfiles2);
-// REGISTER_TEST(test_vma_si_allcation);
-// REGISTER_TEST(test_stack_vma_offset);
-// REGISTER_TEST(test_stack_vma_enlarge);
-// REGISTER_TEST(test_available_swapfile);
-// REGISTER_TEST(test_vma_values);
-// REGISTER_TEST(test_mul_vma_values);
+REGISTER_TEST(test_folio_offset);
+REGISTER_TEST(test_multiple_swapfiles);
+REGISTER_TEST(test_multiple_swapfiles2);
+REGISTER_TEST(test_vma_si_allcation);
+REGISTER_TEST(test_stack_vma_offset);
+REGISTER_TEST(test_stack_vma_enlarge);
+REGISTER_TEST(test_available_swapfile);
+REGISTER_TEST(test_vma_values);
+REGISTER_TEST(test_mul_vma_values);
+REGISTER_TEST(test_heap_enlarge);
 // REGISTER_PERF_TEST(test_seq_swapout_throughput);
 // REGISTER_PERF_TEST(test_rand_swapout_throughput);
 REGISTER_PERF_TEST(test_seq_swapin_throughput);
 // REGISTER_PERF_TEST(test_rand_swapin_throughput);
+void test_heap_enlarge(void) {
+    make_swaps(1, 0);
+    char* addr = malloc(PAGE_SIZE * 10);
+    ASSERT(addr != NULL);
+    for (int i = 0; i < 10; i++) {
+        addr[i * PAGE_SIZE] = i;
+    }
+    swapout_page(addr);
+    int base_offset = get_swap_offset_from_page(addr);
+    printf("Base offset: %d\n", base_offset);
+    for (int i = 0; i < 10; i++) {
+        swapout_page(addr + (i * PAGE_SIZE));
+        ASSERT_EQ(get_swap_offset_from_page(addr + (i * PAGE_SIZE)), base_offset + i);
+        ASSERT_EQ(addr[i * PAGE_SIZE], i);
+    }
+    char* addr2 = malloc(PAGE_SIZE * 10);
+    ASSERT(addr2 != NULL);
+    for (int i = 0; i < 10; i++) {
+        addr2[i * PAGE_SIZE] = i;
+    }
+    for (int i = 0; i < 10; i++) {
+        swapout_page(addr2 + (i * PAGE_SIZE));
+        ASSERT_EQ(get_swap_offset_from_page(addr2 + (i * PAGE_SIZE)), base_offset + 10 + i);
+        ASSERT_EQ(addr2[i * PAGE_SIZE], i);
+    }
 
+}
 void test_seq_swapin_throughput(void) {
     make_swaps(1, 0);
     unsigned long long region_size = 2<<29; // 512MiB region

@@ -167,7 +167,7 @@ void make_swaps(int num_swapfiles, int swap_flags) {
 
 int swapout_page(void *addr) {
     void* aligned_page = (void*)((unsigned long)addr - (unsigned long)addr % PAGE_SIZE);
-    // printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
+    printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
     if (madvise(aligned_page, PAGE_SIZE, MADV_PAGEOUT) < 0) {
         perror("madvise");
         return -1;
