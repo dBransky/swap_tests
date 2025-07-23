@@ -14,14 +14,14 @@ CFLAGS := -Wall -Wextra -g
 .PHONY: all clean
 
 all: $(TEST_BIN) kmod
-
+port: $(TEST_BIN) install_module
 # Build the kernel module
 kmod:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 	sudo rmmod swpctl_module || true
 	@sudo insmod swpctl_module.ko || { echo "Failed to insert module"; exit 1; }
 	
-portable:
+install_module:
 	sudo rmmod swpctl_module || true
 	@sudo insmod swpctl_module.ko || { echo "Failed to insert module"; exit 1; }
 
