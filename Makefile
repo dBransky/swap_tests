@@ -20,6 +20,10 @@ kmod:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 	sudo rmmod swpctl_module || true
 	@sudo insmod swpctl_module.ko || { echo "Failed to insert module"; exit 1; }
+	
+portable:
+	sudo rmmod swpctl_module || true
+	@sudo insmod swpctl_module.ko || { echo "Failed to insert module"; exit 1; }
 
 # Build the userspace test binary
 $(TEST_BIN): $(TEST_SRC) test_framework.h test_util.h
