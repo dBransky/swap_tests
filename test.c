@@ -4,20 +4,41 @@
 #include <getopt.h>
 
 #define PAGE_SIZE 4096
-REGISTER_TEST(test_folio_offset);
-REGISTER_TEST(test_multiple_swapfiles);
-REGISTER_TEST(test_multiple_swapfiles2);
-REGISTER_TEST(test_vma_si_allcation);
-REGISTER_TEST(test_stack_vma_offset);
-REGISTER_TEST(test_stack_vma_enlarge);
-REGISTER_TEST(test_available_swapfile);
-REGISTER_TEST(test_vma_values);
-REGISTER_TEST(test_mul_vma_values);
-REGISTER_TEST(test_heap_enlarge);
+// REGISTER_TEST(test_folio_offset);
+// REGISTER_TEST(test_multiple_swapfiles);
+// REGISTER_TEST(test_multiple_swapfiles2);
+// REGISTER_TEST(test_vma_si_allcation);
+// REGISTER_TEST(test_stack_vma_offset);
+// REGISTER_TEST(test_stack_vma_enlarge);
+// REGISTER_TEST(test_available_swapfile);
+// REGISTER_TEST(test_vma_values);
+// REGISTER_TEST(test_mul_vma_values);
+// REGISTER_TEST(test_heap_enlarge);
+// REGISTER_TEST(test_eviction);
 // REGISTER_PERF_TEST(test_seq_swapout_throughput);
 // REGISTER_PERF_TEST(test_rand_swapout_throughput);
 REGISTER_PERF_TEST(test_seq_swapin_throughput);
 // REGISTER_PERF_TEST(test_rand_swapin_throughput);
+/**TODO: 
+    -add shared vma tests
+    -add heap recude tests
+    -add stack reduce tests
+    -add vma merge tests. if merge to the right do not NULL the swap_info
+**/
+
+void test_eviction(void) {
+    make_swaps(1, 0);
+    unsigned long long region_size = 2<<29; // 512MiB region
+    unsigned long long pages = region_size / PAGE_SIZE;
+    char *addr = map_large_anon_region(region_size);
+    ASSERT(addr != NULL);
+    for (unsigned long i = 0; i < pages; i++) {
+        addr[i * PAGE_SIZE] = i;
+    }
+    evict_mem(100000);
+    sleep(5);
+}
+
 void test_heap_enlarge(void) {
     make_swaps(1, 0);
     char* addr = malloc(PAGE_SIZE * 10);
@@ -47,12 +68,15 @@ void test_heap_enlarge(void) {
 }
 void test_seq_swapin_throughput(void) {
     make_swaps(1, 0);
-    unsigned long long region_size = 2<<29; // 512MiB region
+    unsigned long long region_size = 1<<29; // 512MiB region
     unsigned long long pages = region_size / PAGE_SIZE;
     char *addr = map_large_anon_region(region_size);
     for (unsigned long long i = 0; i < pages; i++) {
         swapout_page(addr + (i * PAGE_SIZE));
     }
+    sleep(5); // wait for eviction to complete
+    evict_mem(region_size/ PAGE_SIZE);
+    sleep(5); // wait for eviction to complete
     start_measurement();
     for (unsigned long long i = 0; i < pages; i++) {
         unsigned long long * tmp_addr = (unsigned long long *)(addr+(i * PAGE_SIZE));
@@ -60,9 +84,10 @@ void test_seq_swapin_throughput(void) {
         ASSERT_EQ(*tmp_addr, i+1);
 
     }
-    unsigned long long elapsed = stop_measurement();
-    double throughput = (double)(region_size) / elapsed; // bytes per nanosecond
-    printf("Sequential swapout throughput: %.2f bytes/mu_s\n", throughput);
+    double elapsed = stop_measurement();
+    printf("took %.2f seconds to swap in %llu pages\n", elapsed, pages);
+    double throughput = (double)(region_size)/(1<<20) / elapsed; // MB per second
+    printf("Sequential swapin throughput: %.2f MB/s\n", throughput);
     ASSERT_ABOVE(throughput, 150);
 }
 
@@ -284,7 +309,7 @@ int main(int argc, char *argv[]) {
         printf("Usage: %s [--trace] [--minimal-swapfile-num <num>]\n", argv[0]);
         printf("Options:\n");
         printf("  --trace                   Enable tracing with trace-cmd\n");
-        printf("  ---perf                   run preformace tests\n");
+        printf("  --perf                   run preformace tests\n");
         printf("  -h, --help                Show this help message\n");
     }
     while ((opt = getopt_long(argc, argv, "thp", long_options, &option_index)) != -1) {

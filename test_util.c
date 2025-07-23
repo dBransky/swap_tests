@@ -33,7 +33,7 @@ void start_measurement(void) {
     printf("Starting measurement... at %llu ns\n", now.tv_sec * 1000000000ULL + now.tv_nsec);
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 }
-unsigned long long stop_measurement(void) {
+double stop_measurement(void) {
     if (!is_measuring) {
         fprintf(stderr, "Measurement not started.\n");
         exit(EXIT_FAILURE);
@@ -44,7 +44,7 @@ unsigned long long stop_measurement(void) {
     unsigned long long start_ns = start_time.tv_sec * 1000000000ULL + start_time.tv_nsec;
     unsigned long long end_ns = end_time.tv_sec * 1000000000ULL + end_time.tv_nsec;
     printf("Stopping measurement... at %llu ns\n", end_ns);
-    return (end_ns - start_ns) / 1000; // Convert to microseconds
+    return (double)(end_ns - start_ns) / 1000000000; // Convert to seconds
 }
 
 void set_minimal_swapfile_num(int num){
@@ -165,9 +165,72 @@ void make_swaps(int num_swapfiles, int swap_flags) {
     }
 }
 
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+#include <errno.h>
+
+// Simple version matching user's original intent
+int evict_mem(int pages) {
+    printf("Simple eviction test - stopping at first error...\n");
+    int cgroup_id = get_current_memcg_id();
+    
+    usleep(50000); // 50ms delay
+    for (int node = 0; node<2; node++){
+        // age the working set
+        char command[512];
+        
+        // Build command exactly like the user's manual test
+        snprintf(command, sizeof(command), 
+                "echo \"+ %d %d %d\" > /sys/kernel/debug/lru_gen", cgroup_id, node, 3);
+        
+        printf("Testing aging ");
+        fflush(stdout);
+        
+        int status = system(command);
+        
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            printf("SUCCESS\n");
+        } else {
+            printf("FAILED (Invalid argument)\n");
+        }
+        for (int gen = 0; gen < 100; gen++) {
+            char command[512];
+            
+            // Build command exactly like the user's manual test
+            snprintf(command, sizeof(command), 
+                    "echo \"- %d %d %d 200\" > /sys/kernel/debug/lru_gen", cgroup_id, node, gen);
+            
+            printf("Testing generation %d... ", gen);
+            fflush(stdout);
+            
+            int status = system(command);
+            
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                printf("SUCCESS\n");
+            } else {
+                printf("FAILED (Invalid argument)\n");
+                printf("Maximum valid generation: %d\n", gen - 1);
+                return gen;
+            }
+            
+            usleep(50000); // 50ms delay
+        }
+    }
+    return 100;
+}
+
 int swapout_page(void *addr) {
     void* aligned_page = (void*)((unsigned long)addr - (unsigned long)addr % PAGE_SIZE);
-    printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
+    // printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
+    if (madvise(aligned_page, PAGE_SIZE, MADV_COLD) < 0) {
+        perror("madvise");
+        return -1;
+    }
     if (madvise(aligned_page, PAGE_SIZE, MADV_PAGEOUT) < 0) {
         perror("madvise");
         return -1;
@@ -273,4 +336,116 @@ int disable_swaps() {
     fclose(fp);
     printf("Minimal available swapfile index: %d\n", min_available_index);
     return min_available_index;
+}
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+// Step 1: Read /proc/self/cgroup and extract cgroup path
+int get_cgroup_path(char *cgroup_path, size_t max_len) {
+    FILE *fp;
+    char line[1024];
+    int pid = getpid();
+    char cgroup_file[256];
+    snprintf(cgroup_file, sizeof(cgroup_file), "/proc/%d/cgroup", pid);
+    fp = fopen(cgroup_file, "r");
+    if (!fp) {
+        perror("Failed to open cgroup file: /proc/self/cgroup");
+        return -1;
+    }
+    
+    printf("=== Reading %s ===\n",cgroup_file);
+    
+    while (fgets(line, sizeof(line), fp)) {
+        printf("Raw: %s", line);
+        
+        // Parse format: hierarchy-ID:controller-list:cgroup-path
+        char *first_colon = strchr(line, ':');
+        if (!first_colon) continue;
+        
+        char *second_colon = strchr(first_colon + 1, ':');
+        if (!second_colon) continue;
+        
+        // Extract everything after the second colon
+        char *path_start = second_colon + 1;
+        
+        // Remove trailing newline
+        char *newline = strchr(path_start, '\n');
+        if (newline) *newline = '\0';
+        
+        // Copy the path
+        strncpy(cgroup_path, path_start, max_len - 1);
+        cgroup_path[max_len - 1] = '\0';
+        
+        printf("Extracted cgroup path: '%s'\n", cgroup_path);
+        fclose(fp);
+        return 0;
+    }
+    
+    fclose(fp);
+    printf("ERROR: Could not find cgroup path\n");
+    return -1;
+}
+
+// Step 2: Parse /sys/kernel/debug/lru_gen to find matching memcg ID
+int find_memcg_id(const char *target_path) {
+    FILE *fp;
+    char line[1024];
+    int memcg_id = -1;
+    
+    fp = fopen("/sys/kernel/debug/lru_gen", "r");
+    if (!fp) {
+        perror("Failed to open /sys/kernel/debug/lru_gen");
+        return -1;
+    }
+    
+    printf("\n=== Parsing /sys/kernel/debug/lru_gen ===\n");
+    printf("Looking for path: '%s'\n\n", target_path);
+    
+    while (fgets(line, sizeof(line), fp)) {
+        // Look for lines starting with "memcg"
+        if (strncmp(line, "memcg", 5) == 0) {
+            int parsed_id;
+            char parsed_path[512];
+            
+            // Parse format: "memcg   <ID> <path>"
+            if (sscanf(line, "memcg %d %s", &parsed_id, parsed_path) == 2) {
+                printf("Found memcg %d %s\n", parsed_id, parsed_path);
+                
+                // Check if this path matches our target
+                if (strcmp(parsed_path, target_path) == 0) {
+                    printf("*** MATCH FOUND ***\n");
+                    printf("Memcg ID: %d\n", parsed_id);
+                    printf("Path: %s\n", parsed_path);
+                    memcg_id = parsed_id;
+                    // Don't break - continue to show all entries
+                }
+            }
+        }
+    }
+    
+    fclose(fp);
+    
+    if (memcg_id == -1) {
+        printf("\nERROR: No matching memcg found for path '%s'\n", target_path);
+        printf("Available memcg entries were listed above.\n");
+    }
+    
+    return memcg_id;
+}
+
+// Complete function that does steps 1-4
+int get_current_memcg_id(void) {
+    char cgroup_path[512];
+    
+    // Step 1 & 2: Get cgroup path from /proc/self/cgroup
+    if (get_cgroup_path(cgroup_path, sizeof(cgroup_path)) < 0) {
+        return -1;
+    }
+    
+    // Step 3 & 4: Find matching memcg ID in lru_gen
+    int memcg_id = find_memcg_id(cgroup_path);
+    printf("Current memcg ID: %d\n", memcg_id);
+    return memcg_id;
 }

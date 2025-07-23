@@ -24,7 +24,8 @@ struct vma_info_args {
 #define IOCTL_VMA_INFO _IOR('s', 0x04, struct vma_info_args)
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
-
+int get_current_memcg_id();
+int evict_mem(int pages);
 int swapout_page(void *addr);
 int get_swapfile_count();
 int get_swap_offset_from_page(void *addr);
@@ -39,6 +40,6 @@ struct vma_info_args get_vma_info(void *addr);
 void set_minimal_swapfile_num(int num);
 void start_measurement(void);
 //return time in micro
-unsigned long long stop_measurement(void);
+double stop_measurement(void);
 
 #endif // TEST_UTIL_H
