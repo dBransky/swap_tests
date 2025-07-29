@@ -66,8 +66,9 @@ void test_heap_enlarge(void) {
     }
 
 }
+#define SWAP_FLAG_SYNCHRONOUS_IO_W	0x100000
 void test_seq_swapin_throughput(void) {
-    make_swaps(1, 0);
+    make_swaps(1, SWAP_FLAG_SYNCHRONOUS_IO_W);
     unsigned long long region_size = 1<<29; // 512MiB region
     unsigned long long pages = region_size / PAGE_SIZE;
     char *addr = map_large_anon_region(region_size);
