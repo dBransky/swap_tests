@@ -15,6 +15,10 @@ struct swap_info_args {
     unsigned long offset;      // Output: Swap offset
     int has_swap_info;         // Output: Swap info presence
 };
+struct folio_info_args {
+    unsigned int is_seq;
+    void *virtual_address;     // Input: User-space virtual address
+};
 
 #define PAGE_SIZE 4096
 #define TOTAL_SWAPFILES 200
@@ -30,7 +34,7 @@ void start_measurement(void) {
     is_measuring = 1;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    printf("Starting measurement... at %llu ns\n", now.tv_sec * 1000000000ULL + now.tv_nsec);
+    // printf("Starting measurement... at %llu ns\n", now.tv_sec * 1000000000ULL + now.tv_nsec);
     clock_gettime(CLOCK_MONOTONIC, &start_time);
 }
 double stop_measurement(void) {
@@ -43,7 +47,7 @@ double stop_measurement(void) {
     clock_gettime(CLOCK_MONOTONIC, &end_time);
     unsigned long long start_ns = start_time.tv_sec * 1000000000ULL + start_time.tv_nsec;
     unsigned long long end_ns = end_time.tv_sec * 1000000000ULL + end_time.tv_nsec;
-    printf("Stopping measurement... at %llu ns\n", end_ns);
+    // printf("Stopping measurement... at %llu ns\n", end_ns);
     return (double)(end_ns - start_ns) / 1000000000; // Convert to seconds
 }
 
@@ -62,10 +66,13 @@ pid_t start_ftrace(void) {
         perror("fork failed");
         return -1;
     }
-    
+    char* command = malloc(256);
+    snprintf(command, 256, "sudo trace-cmd reset");
+    system(command);
+    free(command);
     if (pid == 0) {
         // close(STDOUT_FILENO); // Close stdout in the child process
-        close(STDERR_FILENO); // Close stderr in the child process
+        // close(STDERR_FILENO); // Close stderr in the child process
         // Child process - exec trace-cmd
         char *args[] = {
             "trace-cmd",
@@ -76,7 +83,11 @@ pid_t start_ftrace(void) {
             "vmscan:*",
             NULL
             // "-e",
-            // "kmem:*",
+            // "kmem:folio_get",
+            // "-e",
+            // "kmem:folio_put",
+            // "-e",
+            // "kmem:folio_ref_add_unless",
             // "-e",
             // "mmap:*",
             // "-e",
@@ -122,6 +133,21 @@ int get_swapfile_count( ){
     }
     return count;
 }
+unsigned int is_folio_seq(void *addr) {
+    struct folio_info_args args = {0};
+    args.virtual_address = addr;
+    int fd = open(DEVICE, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return 1;
+    }
+    if (ioctl(fd, IOCTL_IS_FOLIO_SEQ, &args) < 0) {
+        perror("Failed to check if folio is sequential");
+        return -1;
+    }
+    return args.is_seq;
+}
+
 int get_swap_offset_from_page(void *addr) {
     struct swap_info_args args = {0};
     args.virtual_address = addr;
@@ -136,6 +162,7 @@ void mkswap(const char *filename){
     char command[256];
     snprintf(command, sizeof(command), "mkswap %s > /dev/null 2>&1", filename);
     system(command);
+    // check for errors
 }
 void enable_swap(const char *filename, int swap_flags) {
     // printf("Enabling swap on %s\n", filename);
@@ -155,6 +182,7 @@ void make_swaps(int num_swapfiles, int swap_flags) {
     for (int i = 0; i < num_swapfiles; i++) {
         char filename[256];
         snprintf(filename, sizeof(filename), "/scratch/vma_swaps/swapfile_%d.swap", i+free_swapfile_index);
+        // char* filename = "/tmp/tempfile.1073741824";
         mkswap(filename);
         enable_swap(filename,swap_flags);
         free_swapfile_index++;
@@ -227,11 +255,17 @@ int evict_mem(int pages) {
 int swapout_page(void *addr) {
     void* aligned_page = (void*)((unsigned long)addr - (unsigned long)addr % PAGE_SIZE);
     // printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
-    if (madvise(aligned_page, PAGE_SIZE, MADV_COLD) < 0) {
+    if (madvise(aligned_page, PAGE_SIZE, MADV_PAGEOUT) < 0) {
         perror("madvise");
         return -1;
     }
-    if (madvise(aligned_page, PAGE_SIZE, MADV_PAGEOUT) < 0) {
+    return 0;
+}
+
+int swapout_pages(void *addr, unsigned long long pages) {
+    void* aligned_page = (void*)((unsigned long)addr - (unsigned long)addr % PAGE_SIZE);
+    // printf("Swapping out page at address %p aligned page %p\n", addr, aligned_page);
+    if (madvise(aligned_page, PAGE_SIZE * pages, MADV_PAGEOUT) < 0) {
         perror("madvise");
         return -1;
     }
@@ -307,8 +341,8 @@ int disable_swaps() {
         if (sscanf(line, "%255s %31s %d %d %d", filename, type, &size, &used, &priority) != 5) {
             continue; // Skip malformed lines
         }
-        printf("line: %s\n", line);
-        printf("Processing: %s (used: %d)\n", filename, used);
+        // printf("line: %s\n", line);
+        // printf("Processing: %s (used: %d)\n", filename, used);
         char *underscore = strrchr(filename, '_');
         char *dot = strrchr(filename, '.');
         int index = INT_MAX;
@@ -318,14 +352,14 @@ int disable_swaps() {
         
         // If used is 0, turn off the swapfile
         if (used == 0) {
-            printf("Turning off unused swapfile: %s\n", filename);
+            // printf("Turning off unused swapfile: %s\n", filename);
             disable_swap(filename);
             // Extract index from filename
             // Look for pattern like "swapfile_X.swap"
             
         }
         else{
-            printf("Swapfile %s is in use, index: %d. min_available_index: %d\n", filename, index, min_available_index);
+            // printf("Swapfile %s is in use, index: %d. min_available_index: %d\n", filename, index, min_available_index);
 
             if (index+1 > min_available_index) {
                 min_available_index = index + 1; // Increment to find the next available index
@@ -334,7 +368,7 @@ int disable_swaps() {
     }
     
     fclose(fp);
-    printf("Minimal available swapfile index: %d\n", min_available_index);
+    // printf("Minimal available swapfile index: %d\n", min_available_index);
     return min_available_index;
 }
 #include <stdio.h>

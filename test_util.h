@@ -15,6 +15,10 @@ struct vma_info_args {
     void *vma_ptr;
     unsigned long vm_flags;
     void *swap_info;
+    unsigned long last_fault_offset;
+	unsigned long window_start;
+	unsigned long window_end;
+	size_t swap_ahead_size; 
 };
 
 #define DEVICE "/dev/swapctl"
@@ -22,11 +26,14 @@ struct vma_info_args {
 #define IOCTL_GET_SWAP_OFFSET_FROM_PAGE _IOR('s', 0x02, unsigned long)
 #define IOCTL_VMA_HAS_SWAP_INFO _IOR('s', 0x03, int)
 #define IOCTL_VMA_INFO _IOR('s', 0x04, struct vma_info_args)
+#define IOCTL_IS_FOLIO_SEQ _IOR('s', 0x05, struct folio_info_args)
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
+unsigned int is_folio_seq(void *addr);
 int get_current_memcg_id();
 int evict_mem(int pages);
 int swapout_page(void *addr);
+int swapout_pages(void *addr, unsigned long long pages);
 int get_swapfile_count();
 int get_swap_offset_from_page(void *addr);
 void make_swaps(int num_swapfiles, int swap_flags);

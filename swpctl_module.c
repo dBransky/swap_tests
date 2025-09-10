@@ -13,6 +13,7 @@
 #define IOCTL_GET_SWAP_OFFSET_FROM_PAGE _IOR('s', 0x02, unsigned long)
 #define IOCTL_VMA_HAS_SWAP_INFO _IOR('s', 0x03, int)
 #define IOCTL_VMA_INFO _IOR('s', 0x04, struct vma_info_args)
+#define IOCTL_IS_FOLIO_SEQ _IOR('s', 0x05, struct folio_info_args)
 
 struct swap_info_args {
     void *virtual_address;     // Input: User-space virtual address
@@ -27,6 +28,14 @@ struct vma_info_args {
     void *vma_ptr;
     unsigned long vm_flags;
     void *swap_info;
+    pgoff_t last_fault_offset;
+	pgoff_t window_start;
+	pgoff_t window_end;
+	size_t swap_ahead_size; 
+};
+struct folio_info_args {
+    unsigned int is_seq;
+    void *virtual_address;     // Input: User-space virtual address
 };
 
 static long swapctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -50,6 +59,13 @@ static long swapctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
         spin_lock(&vma->swap_lock);
         args.swap_info = vma->si; // Pointer to swap info
         spin_unlock(&vma->swap_lock);
+        spin_lock_irq(&vma->reclaim_lock);
+        args.last_fault_offset = vma->last_fault_offset;
+        args.window_start = vma->window_start;
+        args.window_end = vma->window_end;
+        args.swap_ahead_size = vma->swap_ahead_size;
+        spin_unlock_irq(&vma->reclaim_lock);
+
 
         if (copy_to_user((void __user *)arg, &args, sizeof(args)))
             return -EFAULT;
@@ -106,6 +122,33 @@ static long swapctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
         args.has_swap_info = vma->si != NULL;
         spin_unlock(&vma->swap_lock);
 
+        if (copy_to_user((void __user *)arg, &args, sizeof(args)))
+            return -EFAULT;
+
+        return 0;
+    }
+    case IOCTL_IS_FOLIO_SEQ: {
+        struct folio_info_args args;
+        if (copy_from_user(&args, (void __user *)arg, sizeof(args)))
+            return -EFAULT;
+        printk(KERN_INFO "swapctl: Getting folio info for address 0x%lx\n", (unsigned long)args.virtual_address);
+         // Pin the user page
+
+        struct page *page = NULL;
+        int ret = get_user_pages_fast((unsigned long)args.virtual_address, 1, 0, &page);
+        if (ret != 1) {
+            pr_err("swapctl: Failed to get page for user address %px (ret=%d)\n", 
+                args.virtual_address, ret);
+            return -EFAULT;
+        }
+        struct folio* folio = page_folio(page);
+        if(!folio) {
+            pr_err("swapctl: Invalid folio for address %px\n", args.virtual_address);
+            return -EINVAL;
+        }
+        args.is_seq = folio_test_seq(folio);
+        put_page(page); // ADD THIS LINE before return
+        printk(KERN_INFO "swapctl: Folio %px is_seq %u\n", folio, args.is_seq);
         if (copy_to_user((void __user *)arg, &args, sizeof(args)))
             return -EFAULT;
 
