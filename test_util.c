@@ -179,17 +179,16 @@ void disable_swap(const char *filename) {
     }
 }
 void make_swaps(int num_swapfiles, int swap_flags) {
+    if (free_swapfile_index == TOTAL_SWAPFILES) {
+        fprintf(stderr, "Reached maximum number of swapfiles (%d)\n", TOTAL_SWAPFILES);
+        exit(EXIT_FAILURE);
+    }
     for (int i = 0; i < num_swapfiles; i++) {
         char filename[256];
         snprintf(filename, sizeof(filename), "/scratch/vma_swaps/swapfile_%d.swap", i+free_swapfile_index);
         // char* filename = "/tmp/tempfile.1073741824";
         mkswap(filename);
         enable_swap(filename,swap_flags);
-        free_swapfile_index++;
-        if (free_swapfile_index > TOTAL_SWAPFILES) {
-            fprintf(stderr, "Reached maximum number of swapfiles (%d)\n", TOTAL_SWAPFILES);
-            exit(EXIT_FAILURE);
-        }
     }
 }
 
