@@ -21,7 +21,7 @@ struct folio_info_args {
 };
 
 #define PAGE_SIZE 4096
-#define TOTAL_SWAPFILES 200
+#define TOTAL_SWAPFILES 232
 static int free_swapfile_index = 1;
 int is_measuring = 0;
 struct timespec start_time;
@@ -482,4 +482,24 @@ int get_current_memcg_id(void) {
     int memcg_id = find_memcg_id(cgroup_path);
     printf("Current memcg ID: %d\n", memcg_id);
     return memcg_id;
+}
+int create_tempfile(size_t size) {
+    char template[] = "/tmp/tempfile.XXXXXX";
+    int fd = mkstemp(template);
+    if (fd < 0) {
+        perror("mkstemp");
+        return -1;
+    }
+    // Unlink the file so it is removed after closing
+    unlink(template);
+    if (ftruncate(fd, size) < 0) {
+        perror("ftruncate");
+        close(fd);
+        return -1;
+    }
+    // drop caches
+    return fd;
+}
+void drop_caches() {
+    system("echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null");
 }

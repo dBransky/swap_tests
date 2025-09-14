@@ -48,5 +48,7 @@ void set_minimal_swapfile_num(int num);
 void start_measurement(void);
 //return time in micro
 double stop_measurement(void);
+int create_tempfile(size_t size);
+void drop_caches();
 
 #endif // TEST_UTIL_H

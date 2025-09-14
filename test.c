@@ -24,7 +24,8 @@
 // REGISTER_TEST(test_random_alloc);
 
 // Memory-limited tests that trigger swapping
-REGISTER_MEMORY_TEST(test_vma_reclaim_window, "4M");
+// REGISTER_MEMORY_TEST(test_vma_reclaim_window, "4M");
+REGISTER_MEMORY_TEST(test_vma_reclaim_window_file, "4M");
 /**TODO: 
     -add shared vma tests
     -add heap recude tests
@@ -325,7 +326,7 @@ void test_vma_reclaim_window(void) {
     char *addr = mmap(NULL, sz_in_pages*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ASSERT(addr != NULL);
     printf("Mapped address: %p\n", addr);
-    char *addr2 = mmap(NULL, sz_in_pages*10*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    char *addr2 = mmap(NULL, 1024*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ASSERT(addr2 != NULL);
     printf("Mapped address: %p\n", addr2);
     struct vma_info_args vma_info = get_vma_info(addr);
@@ -338,6 +339,58 @@ void test_vma_reclaim_window(void) {
     }
     //now completly swap out the first region
     for (int i = 0; i < sz_in_pages*10; i++) {
+        addr2[i*PAGE_SIZE] = i;
+    }
+    vma_info = get_vma_info(addr);
+    ASSERT_EQ(vma_info.window_start, 0);
+    ASSERT_EQ(vma_info.window_end, 64);
+    ASSERT_EQ(vma_info.swap_ahead_size, 128);
+}
+
+void test_vma_reclaim_window_file(void) {
+    char sz_in_pages = 64;
+    int fd1 = open("/scratch/swap_tests/256K.file", O_RDWR);
+    ASSERT(fd1 > 0);
+    if (fd1 < 0)
+    {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    char *addr = mmap(NULL, sz_in_pages*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd1, 0);
+    ASSERT(addr != NULL);
+    ASSERT(addr != MAP_FAILED);
+    if (addr == MAP_FAILED) {
+        perror("mmap failed");
+        exit(EXIT_FAILURE);
+    }
+    printf("Mapped address: %p\n", addr);
+    drop_caches();
+    int fd2 = open("/scratch/swap_tests/4M.file", O_RDWR);
+    ASSERT(fd2 > 0);
+    if (fd2 < 0)
+    {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    char *addr2 = mmap(NULL, 1024*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
+    ASSERT(addr2 != NULL);
+    ASSERT(addr2 != MAP_FAILED);
+    if (addr2 == MAP_FAILED) {
+        perror("mmap failed");
+        exit(EXIT_FAILURE);
+    }
+    printf("Mapped address: %p\n", addr2);
+    drop_caches();
+    struct vma_info_args vma_info = get_vma_info(addr);
+    ASSERT_EQ(vma_info.window_start, 0);
+    ASSERT_EQ(vma_info.window_end, 0);
+    ASSERT_EQ(vma_info.swap_ahead_size, 64);
+    for (int i = 0; i < sz_in_pages; i++) {
+        addr[i*PAGE_SIZE] = i;
+        ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
+    }
+    //now completly swap out the first region
+    for (int i = 0; i < 1024; i++) {
         addr2[i*PAGE_SIZE] = i;
     }
     vma_info = get_vma_info(addr);
