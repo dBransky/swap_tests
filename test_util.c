@@ -18,6 +18,10 @@ struct swap_info_args {
 struct folio_info_args {
     unsigned int is_seq;
     void *virtual_address;     // Input: User-space virtual address
+    unsigned int is_anon;
+    unsigned int is_file;
+    unsigned int has_mapping;
+    unsigned short memory_cgroup;
 };
 
 #define PAGE_SIZE 4096
@@ -114,10 +118,12 @@ int vma_has_swap_info(void *addr) {
     struct swap_info_args args = {0};
     args.has_swap_info = -1;
     args.virtual_address = addr;
-    if (ioctl(open(DEVICE, O_RDONLY), IOCTL_VMA_HAS_SWAP_INFO, &args) < 0) {
+    int fd = ioctl(open(DEVICE, O_RDONLY), IOCTL_VMA_HAS_SWAP_INFO, &args) < 0;
+    if (fd < 0) {
         perror("Failed to check VMA swap info");
         return -1;
     }
+    close(fd);
     return args.has_swap_info;
 }
 int get_swapfile_count( ){
@@ -145,7 +151,82 @@ unsigned int is_folio_seq(void *addr) {
         perror("Failed to check if folio is sequential");
         return -1;
     }
+    close(fd);
     return args.is_seq;
+}
+unsigned int is_folio_anon(void *addr) {
+    struct folio_info_args args = {0};
+    args.virtual_address = addr;
+    int fd = open(DEVICE, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return 1;
+    }
+    if (ioctl(fd, ICOTL_FOLIO_LRU_INFO, &args) < 0) {
+        perror("Failed to check if folio is anon");
+        return -1;
+    }
+    close(fd);
+    return args.is_anon;
+}
+unsigned int is_folio_file(void *addr) {
+    struct folio_info_args args = {0};
+    args.virtual_address = addr;
+    int fd = open(DEVICE, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return 1;
+    }
+    if (ioctl(fd, ICOTL_FOLIO_LRU_INFO, &args) < 0) {
+        perror("Failed to check if folio is file");
+        return -1;
+    }
+    close(fd);
+    return args.is_file;
+}
+unsigned int folio_has_mapping(void *addr) {
+    struct folio_info_args args = {0};
+    args.virtual_address = addr;
+    int fd = open(DEVICE, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return 1;
+    }
+    if (ioctl(fd, ICOTL_FOLIO_LRU_INFO, &args) < 0) {
+        perror("Failed to check if folio has mapping");
+        return -1;
+    }
+    close(fd);
+    return args.has_mapping;
+}
+unsigned short get_current_memcg_id(void) {
+    int memcg_id = -1;
+    int fd = open(DEVICE, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return 1;
+    }
+    if (ioctl(fd, ICOTL_GET_CURRENT_CGROUP, &memcg_id) < 0) {
+        perror("Failed to get current memory cgroup ID");
+        return -1;
+    }
+    close(fd);
+    return (unsigned short)memcg_id;
+}
+unsigned short get_folio_memcg_id(void *addr) {
+    struct folio_info_args args = {0};
+    args.virtual_address = addr;
+    int fd = open(DEVICE, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return 1;
+    }
+    if (ioctl(fd, ICOTL_FOLIO_LRU_INFO, &args) < 0) {
+        perror("Failed to check if folio has mapping");
+        return -1;
+    }
+    close(fd);
+    return args.memory_cgroup;
 }
 
 int get_swap_offset_from_page(void *addr) {
@@ -204,7 +285,7 @@ void make_swaps(int num_swapfiles, int swap_flags) {
 // Simple version matching user's original intent
 int evict_mem(int pages) {
     printf("Simple eviction test - stopping at first error...\n");
-    int cgroup_id = get_current_memcg_id();
+    int cgroup_id = get_current_memcg_id_fs();
     
     usleep(50000); // 50ms delay
     for (int node = 0; node<2; node++){
@@ -388,10 +469,10 @@ int get_cgroup_path(char *cgroup_path, size_t max_len) {
         return -1;
     }
     
-    printf("=== Reading %s ===\n",cgroup_file);
+    // printf("=== Reading %s ===\n",cgroup_file);
     
     while (fgets(line, sizeof(line), fp)) {
-        printf("Raw: %s", line);
+        // printf("Raw: %s", line);
         
         // Parse format: hierarchy-ID:controller-list:cgroup-path
         char *first_colon = strchr(line, ':');
@@ -411,7 +492,7 @@ int get_cgroup_path(char *cgroup_path, size_t max_len) {
         strncpy(cgroup_path, path_start, max_len - 1);
         cgroup_path[max_len - 1] = '\0';
         
-        printf("Extracted cgroup path: '%s'\n", cgroup_path);
+        // printf("Extracted cgroup path: '%s'\n", cgroup_path);
         fclose(fp);
         return 0;
     }
@@ -433,8 +514,8 @@ int find_memcg_id(const char *target_path) {
         return -1;
     }
     
-    printf("\n=== Parsing /sys/kernel/debug/lru_gen ===\n");
-    printf("Looking for path: '%s'\n\n", target_path);
+    // printf("\n=== Parsing /sys/kernel/debug/lru_gen ===\n");
+    // printf("Looking for path: '%s'\n\n", target_path);
     
     while (fgets(line, sizeof(line), fp)) {
         // Look for lines starting with "memcg"
@@ -444,13 +525,13 @@ int find_memcg_id(const char *target_path) {
             
             // Parse format: "memcg   <ID> <path>"
             if (sscanf(line, "memcg %d %s", &parsed_id, parsed_path) == 2) {
-                printf("Found memcg %d %s\n", parsed_id, parsed_path);
+                // printf("Found memcg %d %s\n", parsed_id, parsed_path);
                 
                 // Check if this path matches our target
                 if (strcmp(parsed_path, target_path) == 0) {
-                    printf("*** MATCH FOUND ***\n");
-                    printf("Memcg ID: %d\n", parsed_id);
-                    printf("Path: %s\n", parsed_path);
+                    // printf("*** MATCH FOUND ***\n");
+                    // printf("Memcg ID: %d\n", parsed_id);
+                    // printf("Path: %s\n", parsed_path);
                     memcg_id = parsed_id;
                     // Don't break - continue to show all entries
                 }
@@ -469,7 +550,7 @@ int find_memcg_id(const char *target_path) {
 }
 
 // Complete function that does steps 1-4
-int get_current_memcg_id(void) {
+int get_current_memcg_id_fs(void) {
     char cgroup_path[512];
     
     // Step 1 & 2: Get cgroup path from /proc/self/cgroup

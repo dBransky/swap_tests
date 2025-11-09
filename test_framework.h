@@ -281,7 +281,11 @@ static inline void run_memory_tests(int enable_traces) {
         if (enable_traces) 
             pid = start_ftrace(); // Start ftrace if needed
         make_swaps(100, 0); 
+        drop_caches();
+        sleep(1);
         int result = system(full_cmd);
+        sleep(1);
+        drop_caches();
         set_minimal_swapfile_num(disable_swaps()); // Disable all swaps before running tests
         if (enable_traces) 
             stop_ftrace(test_name, pid); // Stop ftrace if needed

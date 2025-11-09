@@ -27,10 +27,17 @@ struct vma_info_args {
 #define IOCTL_VMA_HAS_SWAP_INFO _IOR('s', 0x03, int)
 #define IOCTL_VMA_INFO _IOR('s', 0x04, struct vma_info_args)
 #define IOCTL_IS_FOLIO_SEQ _IOR('s', 0x05, struct folio_info_args)
+#define ICOTL_FOLIO_LRU_INFO _IOR('s', 0x06, struct folio_info_args)
+#define ICOTL_GET_CURRENT_CGROUP _IOR('s', 0x07, unsigned short)
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 unsigned int is_folio_seq(void *addr);
-int get_current_memcg_id();
+unsigned int is_folio_anon(void *addr);
+unsigned int is_folio_file(void *addr);
+unsigned int folio_has_mapping(void *addr);
+unsigned short get_folio_memcg_id(void *addr);
+unsigned short get_current_memcg_id(void);
+int get_current_memcg_id_fs(void);
 int evict_mem(int pages);
 int swapout_page(void *addr);
 int swapout_pages(void *addr, unsigned long long pages);

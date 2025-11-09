@@ -6,10 +6,12 @@
 #include <string.h>
 
 #define PAGE_SIZE 4096
+// REGISTER_TEST(test_folio_file_info);
 // REGISTER_TEST(test_folio_offset);
 // REGISTER_TEST(test_multiple_swapfiles);
 // REGISTER_TEST(test_multiple_swapfiles2);
 // REGISTER_TEST(test_vma_si_allcation);
+REGISTER_TEST(test_vma_si_allcation_large);
 // REGISTER_TEST(test_stack_vma_offset);
 // REGISTER_TEST(test_stack_vma_enlarge);
 // REGISTER_TEST(test_available_swapfile);
@@ -21,11 +23,14 @@
 // REGISTER_PERF_TEST(test_seq_swapin_throughput);
 // REGISTER_PERF_TEST(test_rand_swapin_throughput);
 // REGISTER_TEST(test_seq_alloc);
+// REGISTER_TEST(test_large_seq_alloc);
 // REGISTER_TEST(test_random_alloc);
 
 // Memory-limited tests that trigger swapping
 // REGISTER_MEMORY_TEST(test_vma_reclaim_window, "4M");
-REGISTER_MEMORY_TEST(test_vma_reclaim_window_file, "4M");
+// REGISTER_MEMORY_TEST(test_vma_reclaim_loop, "2M");
+// REGISTER_MEMORY_TEST(test_file, "2M");
+// REGISTER_MEMORY_TEST(test_vma_reclaim_window_file, "4M");
 /**TODO: 
     -add shared vma tests
     -add heap recude tests
@@ -148,6 +153,24 @@ void test_vma_si_allcation(void) {
         ASSERT_EQ(vma_has_swap_info(addr + (i * PAGE_SIZE)), 1);
     }
 }
+
+void test_vma_si_allcation_large(void) {
+    make_swaps(1, 0);
+    unsigned long long region_size = PAGE_SIZE * 262144;
+    char *addr = mmap(NULL, region_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) {
+        perror("mmap");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < 262144; i++) {
+        addr[i * PAGE_SIZE]++;
+    }
+    ASSERT_EQ(vma_has_swap_info(addr), 0);
+    swapout_page(addr);
+    swapout_page(addr + (PAGE_SIZE * 262143));
+    ASSERT_EQ(vma_has_swap_info(addr), 1);
+    addr[PAGE_SIZE*262143]++;
+}
 void test_available_swapfile(void) {
     ASSERT(get_swapfile_count() == 0);
     make_swaps(1, 0);
@@ -163,6 +186,14 @@ void test_seq_alloc(void) {
     char *addr = map_anon_region(PAGE_SIZE*10);
     ASSERT(addr != NULL);
     for (int i = 0; i < 10; i++) {
+        ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
+    }
+}
+void test_large_seq_alloc(void) {
+    make_swaps(1, 0);
+    char *addr = map_large_anon_region(PAGE_SIZE*262144);
+    ASSERT(addr != NULL);
+    for (int i = 0; i < 262144; i++) {
         ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
     }
 }
@@ -319,7 +350,49 @@ void test_mul_vma_values(void){
         ASSERT_NEQ(vma_info5.swap_info, vma_info6.swap_info);
     }
 }
+void test_vma_reclaim_loop(void) {
+    int sz_in_pages = 1024;
+    char *addr = mmap(NULL, sz_in_pages*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(addr != NULL);
+    printf("Mapped address: %p\n", addr);
+    volatile int value = 0;
+    struct vma_info_args vma_info = get_vma_info(addr);
+    ASSERT_EQ(vma_info.window_start, 0);
+    ASSERT_EQ(vma_info.window_end, 0);
+    ASSERT_EQ(vma_info.swap_ahead_size, 64);
+    for (int i = 0; i < sz_in_pages; i++) {
+        addr[i*PAGE_SIZE] = i;
+        ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
+    }
+    for (int loop = 0; loop < 2; loop++) {
+        for (int i = 0; i < sz_in_pages; i++) {
+            value += addr[i*PAGE_SIZE];
+        }
+    }
+    printf("Final value: %d\n", value);
+}
 
+void test_file(void) {
+    int sz_in_pages = 1024;
+    char *addr = mmap(NULL, sz_in_pages*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT(addr != NULL);
+    printf("Mapped address: %p\n", addr);
+    volatile int value = 0;
+    struct vma_info_args vma_info = get_vma_info(addr);
+    ASSERT_EQ(vma_info.window_start, 0);
+    ASSERT_EQ(vma_info.window_end, 0);
+    ASSERT_EQ(vma_info.swap_ahead_size, 64);
+    for (int i = 0; i < sz_in_pages; i++) {
+        addr[i*PAGE_SIZE] = i;
+        ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
+    }
+    for (int loop = 0; loop < 2; loop++) {
+        for (int i = 0; i < sz_in_pages; i++) {
+            value += addr[i*PAGE_SIZE];
+        }
+    }
+    printf("Final value: %d\n", value);
+}
 // Memory-limited test implementations
 void test_vma_reclaim_window(void) {
     char sz_in_pages = 64;
@@ -338,7 +411,7 @@ void test_vma_reclaim_window(void) {
         ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
     }
     //now completly swap out the first region
-    for (int i = 0; i < sz_in_pages*10; i++) {
+    for (int i = 0; i < 1024; i++) {
         addr2[i*PAGE_SIZE] = i;
     }
     vma_info = get_vma_info(addr);
@@ -349,6 +422,69 @@ void test_vma_reclaim_window(void) {
 
 void test_vma_reclaim_window_file(void) {
     char sz_in_pages = 64;
+    // drop_caches();
+    int fd1 = open("/scratch/swap_tests/256K.file", O_RDWR);
+    ASSERT(fd1 > 0);
+    if (fd1 < 0)
+    {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    char *addr = mmap(NULL, sz_in_pages*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd1, 0);
+    ASSERT(addr != NULL);
+    ASSERT(addr != MAP_FAILED);
+    if (addr == MAP_FAILED) {
+        perror("mmap failed");
+        exit(EXIT_FAILURE);
+    }
+    printf("Mapped address: %p\n", addr);
+    // drop_caches();
+    int fd2 = open("/scratch/swap_tests/4M.file", O_RDWR);
+    ASSERT(fd2 > 0);
+    if (fd2 < 0)
+    {
+        perror("open");
+        exit(EXIT_FAILURE);
+    }
+    char *addr2 = mmap(NULL, 1024*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
+    ASSERT(addr2 != NULL);
+    ASSERT(addr2 != MAP_FAILED);
+    if (addr2 == MAP_FAILED) {
+        perror("mmap failed");
+        exit(EXIT_FAILURE);
+    }
+    printf("Mapped address: %p\n", addr2);
+    // drop_caches();
+    struct vma_info_args vma_info = get_vma_info(addr);
+    ASSERT_EQ(vma_info.window_start, 0);
+    ASSERT_EQ(vma_info.window_end, 0);
+    ASSERT_EQ(vma_info.swap_ahead_size, 64);
+    for (int i = 0; i < sz_in_pages; i++) {
+        addr[i*PAGE_SIZE] = i;
+        ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
+        ASSERT(is_folio_file(addr + (i * PAGE_SIZE)));
+        ASSERT_EQ(is_folio_anon(addr + (i * PAGE_SIZE)), 0);
+        ASSERT(folio_has_mapping(addr + (i * PAGE_SIZE)));
+        ASSERT_EQ(get_folio_memcg_id(addr + (i * PAGE_SIZE)), get_current_memcg_id());
+        // ASSERT_EQ(get_folio_memcg_id(addr + (i * PAGE_SIZE)), (unsigned short)get_current_memcg_id_fs());
+    }
+    //now completly swap out the first region
+    for (int i = 0; i < 1024; i++) {
+        addr2[i*PAGE_SIZE] = i;
+        ASSERT(is_folio_file(addr2 + (i * PAGE_SIZE)));
+        ASSERT_EQ(is_folio_anon(addr2 + (i * PAGE_SIZE)), 0);
+        ASSERT(folio_has_mapping(addr2 + (i * PAGE_SIZE)));
+        ASSERT_EQ(get_folio_memcg_id(addr2 + (i * PAGE_SIZE)), get_current_memcg_id());
+        // ASSERT_EQ(get_folio_memcg_id(addr2 + (i * PAGE_SIZE)), (unsigned short)get_current_memcg_id_fs());
+    }
+    vma_info = get_vma_info(addr);
+    ASSERT_EQ(vma_info.window_start, 0);
+    ASSERT_EQ(vma_info.window_end, 64);
+    ASSERT_EQ(vma_info.swap_ahead_size, 128);
+}
+void test_folio_file_info(void){
+    char sz_in_pages = 64;
+    drop_caches();
     int fd1 = open("/scratch/swap_tests/256K.file", O_RDWR);
     ASSERT(fd1 > 0);
     if (fd1 < 0)
@@ -365,38 +501,17 @@ void test_vma_reclaim_window_file(void) {
     }
     printf("Mapped address: %p\n", addr);
     drop_caches();
-    int fd2 = open("/scratch/swap_tests/4M.file", O_RDWR);
-    ASSERT(fd2 > 0);
-    if (fd2 < 0)
-    {
-        perror("open");
-        exit(EXIT_FAILURE);
-    }
-    char *addr2 = mmap(NULL, 1024*PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0);
-    ASSERT(addr2 != NULL);
-    ASSERT(addr2 != MAP_FAILED);
-    if (addr2 == MAP_FAILED) {
-        perror("mmap failed");
-        exit(EXIT_FAILURE);
-    }
-    printf("Mapped address: %p\n", addr2);
-    drop_caches();
-    struct vma_info_args vma_info = get_vma_info(addr);
-    ASSERT_EQ(vma_info.window_start, 0);
-    ASSERT_EQ(vma_info.window_end, 0);
-    ASSERT_EQ(vma_info.swap_ahead_size, 64);
     for (int i = 0; i < sz_in_pages; i++) {
         addr[i*PAGE_SIZE] = i;
-        ASSERT_EQ(is_folio_seq(addr + (i * PAGE_SIZE)), 1);
+        ASSERT(is_folio_file(addr + (i * PAGE_SIZE)));
+        ASSERT_EQ(is_folio_anon(addr + (i * PAGE_SIZE)), 0);
+        ASSERT(folio_has_mapping(addr + (i * PAGE_SIZE)));
+        ASSERT_EQ(get_folio_memcg_id(addr + (i * PAGE_SIZE)), get_current_memcg_id());
+        ASSERT_EQ(get_folio_memcg_id(addr + (i * PAGE_SIZE)), (unsigned short)get_current_memcg_id_fs());
     }
-    //now completly swap out the first region
-    for (int i = 0; i < 1024; i++) {
-        addr2[i*PAGE_SIZE] = i;
-    }
-    vma_info = get_vma_info(addr);
-    ASSERT_EQ(vma_info.window_start, 0);
-    ASSERT_EQ(vma_info.window_end, 64);
-    ASSERT_EQ(vma_info.swap_ahead_size, 128);
+    drop_caches();
+
+
 }
 
 void print_usage(char* argv0) {
